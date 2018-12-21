@@ -1,0 +1,19 @@
+{
+  "name": "log-analyzer",
+  "version": "1.0.0",
+  "author": "Archil Karchava",
+  "license": "MIT",
+  "private": true,
+  "devDependencies": {
+    "lerna": "^3.6.0"
+  },
+  "scripts": {
+    "build:server": "lerna run build --scope={@log-analyzer/server}",
+    "build:client": "lerna run build --scope={@log-analyzer/client}"
+  },
+  "workspaces": {
+    "packages": [
+      "packages/*"
+    ]
+  }
+}
