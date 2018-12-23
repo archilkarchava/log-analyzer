@@ -11,3 +11,4 @@ dist
 .env.dev
 yarn-debug.log*
 yarn-error.log*
+data.json
