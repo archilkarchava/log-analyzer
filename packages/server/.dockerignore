@@ -1,6 +1,7 @@
 node_modules
 build
 dist
+output.json
 npm-debug.log
 Dockerfile*
 docker-compose*

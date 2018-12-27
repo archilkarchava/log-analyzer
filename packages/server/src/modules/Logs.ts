@@ -1,69 +1,33 @@
 import * as fs from "fs";
 import * as readline from "readline";
 import { countryLookup } from "../utils/countryLookup";
-
-interface IVisitedItem {
-  item: IItem;
-  dateVisited: Date;
-}
-
-interface IVisitedItemCategory {
-  category: string;
-  dateVisited: Date;
-}
-
-interface IShoppingCartItem {
-  item: IItem;
-  amount: number;
-  dateAdded: Date;
-}
-
-interface ISession {
-  startDate: Date;
-  endDate: Date;
-  itemsVisited: IVisitedItem[];
-  categoriesVisited: IVisitedItemCategory[];
-  shoppingCarts: IShoppingCart[];
-}
-
-interface IVisitor {
-  ip: string;
-  country: string | null;
-  sessions: ISession[];
-  userId: number | null;
-}
-
-interface IItem {
-  id: number;
-  name: string;
-  category: string;
-}
-
-interface IShoppingCart {
-  id: number;
-  items: IShoppingCartItem[];
-  paymentDate: Date | null;
-}
+import { Visitor } from "../entity/Visitor";
+import { Item } from "../entity/Item";
+import { Session } from "../entity/Session";
+import { ShoppingCart } from "../entity/ShoppingCart";
+import { ShoppingCartItem } from "../entity/ShoppingCartItem";
+import { ItemCategory } from "../entity/ItemCategory";
+import { ItemVisit } from "../entity/ItemVisit";
+import { CategoryVisit } from "../entity/CategoryVisit";
+import { Connection, EntityManager } from "typeorm";
 
 export class Logs {
-  private regexIp = /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g;
+  private logFilePath: string;
+  private dbEntityManager: EntityManager;
+  private rawLogsByIp: Map<string, string[]>;
+  private visitors: Visitor[];
+  private regexIp = /(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)/g;
   private regexDate = /(([1]{1}[9]{1}[9]{1}\d{1})|([2-9]{1}\d{3}))-[0,1]?\d{1}-(([0-2]?\d{1})|([3][0,1]{1}))/g;
   private regexTime = /(([0-1][0-9])|([2][0-3])):([0-5][0-9]):([0-5][0-9])/g;
-  // private regexItem = /(?<=\b\/(canned_food|fresh_fish|frozen_fish|semi_manufactures|caviar)\/)(\w+)/g;
   private regexItemId = /(?<=\bgoods_id=)(\d+)/g;
   private regexItemAmount = /(?<=\bamount=)(\d+)/g;
-  // private regexItemCategory = /(canned_food|fresh_fish|frozen_fish|semi_manufactures|caviar)/g;
   private regexCategory = /(?<=\ball_to_the_bottom\.com\/)((\w)+(\w+\b(?<!\bcart|pay|success_pay_(\d)+)))/g;
   private regexCategorySlashItem = /(?<=\ball_to_the_bottom\.com\/)(\w+\/\w+)/g;
   private regexCartId = /(?<=\bcart_id=)(\d+)/g;
   private regexUserId = /(?<=\buser_id=)(\d+)/g;
-  private logFilePath: string;
-  private logs: Map<string, string[]>;
-  private visitors: Map<string, IVisitor>;
-  private itemsKeyId: Map<number | string, IItem>;
-  private itemsKeyName: Map<number | string, IItem>;
-  constructor(filePath: string) {
+  constructor(filePath: string, dbConnection: Connection) {
     this.logFilePath = filePath;
+    this.dbEntityManager = dbConnection.manager;
   }
 
   public async getData() {
@@ -77,66 +41,96 @@ export class Logs {
     return this.visitors;
   }
 
-  private collectVisitors(): Promise<Map<string, IVisitor>> {
-    const result: Map<string, IVisitor> = new Map();
+  public async saveToDB() {
+    try {
+      const visitors = await this.collectVisitors();
+      const visitorRepo = this.dbEntityManager.getRepository(Visitor);
+      await visitorRepo.save(visitors);
+    } catch (err) {
+      throw new Error(err);
+    }
+  }
+
+  private async saveItemsToDB() {
+    try {
+      const items = await this.collectItems();
+      const itemRepo = this.dbEntityManager.getRepository(Item);
+      await itemRepo.save(items);
+    } catch (err) {
+      throw new Error(err);
+    }
+  }
+
+  private async getRawLogsByIp() {
+    if (!this.rawLogsByIp) {
+      try {
+        this.rawLogsByIp = await this.readIpLogs();
+      } catch (err) {
+        throw new Error(err);
+      }
+    }
+  }
+
+  private collectVisitors(): Promise<Visitor[]> {
+    const result: Visitor[] = [];
     return new Promise(async (resolve, reject) => {
       try {
-        await this.getItems();
+        await this.saveItemsToDB();
       } catch (err) {
         reject(new Error(err));
       }
-      if (!this.logs) {
-        try {
-          await this.read();
-        } catch (err) {
-          reject(new Error(err));
-        }
-      }
-      const ipsLogs = this.logs;
+      const ipsLogs = this.rawLogsByIp;
       for (const [ip, log] of ipsLogs) {
         let userId: number | null = null;
-        const sessions: ISession[] = [];
-        const categoriesVisited: IVisitedItemCategory[] = [];
-        const itemsVisited: IVisitedItem[] = [];
-        const shoppingCarts: IShoppingCart[] = [];
-        const firstVisitDate = log[0].match(this.regexDate)![0];
-        const firstVisitTime = log[0].match(this.regexTime)![0];
+        const sessions: Session[] = [];
+        const visitedCategories: CategoryVisit[] = [];
+        const visitedItems: ItemVisit[] = [];
+        const shoppingCarts: ShoppingCart[] = [];
+        const sessionStartDate = log[0].match(this.regexDate)![0];
+        const sessionStartTime = log[0].match(this.regexTime)![0];
         const sessionStartDateTime = new Date(
-          `${firstVisitDate}T${firstVisitTime}Z`
+          `${sessionStartDate}T${sessionStartTime}Z`
         );
-        const DateTime: {
-          curLine: Date;
-          prevLine: Date;
+        const dateTime: {
+          cur: Date;
+          prev: Date;
           sessionStart: Date;
         } = {
-          curLine: sessionStartDateTime,
-          prevLine: sessionStartDateTime,
+          cur: sessionStartDateTime,
+          prev: sessionStartDateTime,
           sessionStart: sessionStartDateTime
         };
-        let curShoppingCart: IShoppingCart | null = null;
-        let curShoppingCartItems: IShoppingCartItem[] = [];
+        let curShoppingCart: ShoppingCart | null = null;
+        let curShoppingCartItems: ShoppingCartItem[] = [];
         for (let i = 1; i < log.length; i++) {
           let shoppingCartId: number | null = null;
-          DateTime.prevLine = DateTime.curLine;
+          dateTime.prev = dateTime.cur;
           const curLine = log[i];
           const prevLine = log[i - 1];
           const curDate = curLine.match(this.regexDate)![0];
           const curTime = curLine.match(this.regexTime)![0];
-          DateTime.curLine = new Date(`${curDate}T${curTime}Z`);
-          if (curLine.match(this.regexCategory)) {
-            categoriesVisited.push({
-              category: curLine.match(this.regexCategory)![0],
-              dateVisited: DateTime.curLine
-            });
+          dateTime.cur = new Date(`${curDate}T${curTime}Z`);
+          if (
+            curLine.match(this.regexCategory) &&
+            !curLine.match(this.regexCategorySlashItem)
+          ) {
+            visitedCategories.push({
+              category: {
+                name: curLine.match(this.regexCategory)![0]
+              },
+              dateVisited: dateTime.cur
+            } as CategoryVisit);
           }
           if (curLine.match(this.regexCategorySlashItem)) {
-            const itemName = curLine
+            const [itemCategory, itemName] = curLine
               .match(this.regexCategorySlashItem)![0]
-              .split("/")[1];
-            itemsVisited.push({
-              item: this.itemsKeyName.get(itemName)!,
-              dateVisited: DateTime.curLine
-            });
+              .split("/");
+            visitedItems.push({
+              item: await this.dbEntityManager.findOne(Item, {
+                where: { name: itemName, category: itemCategory }
+              }),
+              dateVisited: dateTime.cur
+            } as ItemVisit);
           } else if (curLine.includes("cart?")) {
             shoppingCartId = parseInt(curLine.match(this.regexCartId)![0], 10);
             if (shoppingCartId) {
@@ -147,29 +141,29 @@ export class Logs {
               );
               if (curShoppingCart && curShoppingCart!.id === shoppingCartId) {
                 curShoppingCartItems.push({
-                  item: this.itemsKeyId.get(itemId)!,
+                  item: await this.dbEntityManager.findOne(Item, itemId),
                   amount: itemAmount,
-                  dateAdded: DateTime.curLine
-                });
+                  dateAdded: dateTime.cur
+                } as ShoppingCartItem);
                 curShoppingCart!.items = curShoppingCartItems;
               } else {
                 curShoppingCartItems = [
                   {
-                    item: this.itemsKeyId.get(itemId)!,
+                    item: await this.dbEntityManager.findOne(Item, itemId),
                     amount: itemAmount,
-                    dateAdded: DateTime.curLine
-                  }
+                    dateAdded: dateTime.cur
+                  } as ShoppingCartItem
                 ];
                 curShoppingCart = {
                   id: shoppingCartId!,
                   items: curShoppingCartItems,
                   paymentDate: null
-                };
+                } as ShoppingCart;
               }
             }
           } else if (curLine.includes("success_pay_")) {
             if (curLine.includes(curShoppingCart!.id.toString())) {
-              curShoppingCart!.paymentDate = DateTime.curLine;
+              curShoppingCart!.paymentDate = dateTime.cur;
               shoppingCarts.push(curShoppingCart!);
               curShoppingCart = null;
               userId = parseInt(prevLine.match(this.regexUserId)![0], 10);
@@ -177,25 +171,25 @@ export class Logs {
           }
           // 5 * 60 * 60 * 1000 == 5 hours
           let sessionHasEnded =
-            DateTime.curLine.getTime() - DateTime.prevLine.getTime() >
+            dateTime.cur.getTime() - dateTime.prev.getTime() >
             5 * 60 * 60 * 1000;
           if (i === log.length - 1) {
-            DateTime.prevLine = DateTime.curLine;
+            dateTime.prev = dateTime.cur;
             sessionHasEnded = true;
           }
           if (sessionHasEnded) {
             sessions.push({
-              startDate: DateTime.sessionStart,
-              endDate: DateTime.prevLine,
-              itemsVisited,
-              categoriesVisited,
+              startDate: dateTime.sessionStart,
+              endDate: dateTime.prev,
+              visitedItems,
+              visitedCategories,
               shoppingCarts
-            });
-            DateTime.sessionStart = DateTime.curLine;
+            } as Session);
+            dateTime.sessionStart = dateTime.cur;
           }
         }
 
-        result.set(ip, {
+        result.push({
           ip,
           country: countryLookup(ip),
           userId,
@@ -206,78 +200,38 @@ export class Logs {
     });
   }
 
-  private async getItems() {
-    if (!this.itemsKeyId || !this.itemsKeyName) {
-      try {
-        this.itemsKeyId = await this.collectItems("id");
-        this.itemsKeyName = await this.collectItems("name");
-      } catch (err) {
-        throw new Error(err);
-      }
-    }
-  }
-
-  private collectItems(
-    returnMapKey: "id" | "name" | "category" = "id"
-  ): Promise<Map<number | string, IItem>> {
-    const result: Map<number | string, IItem> = new Map();
+  private collectItems(): Promise<Item[]> {
+    const result: Map<number, Item> = new Map();
     return new Promise(async (resolve, reject) => {
       try {
-        await this.read();
+        await this.getRawLogsByIp();
       } catch (err) {
         reject(new Error(err));
       }
-      const ipsLogs = this.logs;
-      for (const ipLog of ipsLogs.values()) {
+      for (const ipLog of this.rawLogsByIp.values()) {
         for (let i = 1; i < ipLog.length; i++) {
           const curLine = ipLog[i];
           const prevLine = ipLog[i - 1];
           if (curLine.match(this.regexItemId)) {
             const id = parseInt(curLine.match(this.regexItemId)![0], 10);
-            const [category, name] = prevLine
+            const [categoryName, itemName] = prevLine
               .match(this.regexCategorySlashItem)![0]
               .split("/");
-            switch (returnMapKey) {
-              case "id":
-                result.set(id, {
-                  id,
-                  name,
-                  category
-                });
-                break;
-              case "name":
-                result.set(name, {
-                  id,
-                  name,
-                  category
-                });
-                break;
-              case "category":
-                result.set(category, {
-                  id,
-                  name,
-                  category
-                });
-            }
+            result.set(id, {
+              id,
+              name: itemName,
+              category: {
+                name: categoryName
+              } as ItemCategory
+            } as Item);
           }
         }
       }
-      // const resultSortedById = new Map(
-      //   [...result].sort((a, b) => (a[0] > b[0] ? 1 : -1))
-      // );
-      resolve(result);
+      resolve([...result.values()]);
     });
   }
 
-  private async read() {
-    try {
-      this.logs = await this.sortLogsByIps();
-    } catch (err) {
-      throw new Error(err);
-    }
-  }
-
-  private sortLogsByIps(): Promise<Map<string, string[]>> {
+  private readIpLogs(): Promise<Map<string, string[]>> {
     const result: Map<string, string[]> = new Map();
     const inputStream = fs.createReadStream(this.logFilePath, "utf8");
     const rl = readline.createInterface(inputStream);
