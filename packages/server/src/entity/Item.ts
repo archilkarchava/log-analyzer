@@ -1,23 +1,24 @@
-import {
-  BaseEntity,
-  Column,
-  PrimaryColumn,
-  ManyToMany,
-  JoinTable
-} from "typeorm";
-import { ShoppingCart } from "./ShoppingCart";
+import { Column, PrimaryColumn, Entity, ManyToOne, OneToMany } from "typeorm";
+import { ItemCategory } from "./ItemCategory";
+import { ItemVisit } from "./ItemVisit";
+import { ShoppingCartItem } from "./ShoppingCartItem";
 
-export class Item extends BaseEntity {
-  @PrimaryColumn()
+@Entity()
+export class Item {
+  @PrimaryColumn({ unique: true })
   public id: number;
 
   @Column()
   public name: string;
 
-  @Column()
-  public category: string;
+  @ManyToOne(() => ItemCategory, category => category.items, {
+    cascade: true
+  })
+  public category: ItemCategory;
 
-  @ManyToMany(() => ShoppingCart)
-  @JoinTable()
-  public shoppingCarts: ShoppingCart[];
+  @OneToMany(() => ItemVisit, itemPageVisit => itemPageVisit.item)
+  public visits: ItemVisit[];
+
+  @OneToMany(() => ShoppingCartItem, shoppingCartItem => shoppingCartItem.item)
+  public shoppingCartItems: ShoppingCartItem[];
 }

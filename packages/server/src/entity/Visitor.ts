@@ -1,26 +1,17 @@
-import {
-  Entity,
-  PrimaryGeneratedColumn,
-  Column,
-  BaseEntity,
-  OneToMany
-} from "typeorm";
-import { ShoppingCart } from "./ShoppingCart";
+import { Entity, Column, OneToMany, PrimaryColumn } from "typeorm";
+import { Session } from "./Session";
 
 @Entity()
-export class Visitor extends BaseEntity {
-  @PrimaryGeneratedColumn("uuid")
-  public id: string;
-
-  @Column({ unique: true, nullable: true })
-  public userId: number;
-
-  @Column({ unique: true })
+export class Visitor {
+  @PrimaryColumn({ unique: true })
   public ip: string;
 
-  @Column()
-  public country: string;
+  @Column({ type: "text", nullable: true })
+  public country: string | null;
 
-  @OneToMany(() => ShoppingCart, shoppingCart => shoppingCart.visitor)
-  public shoppingCarts: ShoppingCart[];
+  @Column({ type: "bigint", unique: true, nullable: true })
+  public userId: number | null;
+
+  @OneToMany(() => Session, session => session.visitor, { cascade: true })
+  public sessions: Session[];
 }

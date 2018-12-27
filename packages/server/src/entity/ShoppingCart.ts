@@ -1,23 +1,26 @@
 import {
-  BaseEntity,
   Entity,
   Column,
   ManyToOne,
-  PrimaryColumn
-  // ManyToMany,
-  // JoinTable
+  PrimaryColumn,
+  ManyToMany,
+  JoinTable
 } from "typeorm";
-import { Visitor } from "./Visitor";
-// import { Item } from "./Item";
+import { Session } from "./Session";
+import { ShoppingCartItem } from "./ShoppingCartItem";
 
 @Entity()
-export class ShoppingCart extends BaseEntity {
-  @PrimaryColumn()
+export class ShoppingCart {
+  @PrimaryColumn({ unique: true })
   public id: number;
 
-  @Column()
-  public isPaid: boolean;
+  @ManyToMany(() => ShoppingCartItem, { cascade: true })
+  @JoinTable()
+  public items: ShoppingCartItem[];
 
-  @ManyToOne(() => Visitor, visitor => visitor.shoppingCarts, { cascade: true })
-  public visitor: Visitor;
+  @Column({ type: "date", nullable: true })
+  public paymentDate: Date | null;
+
+  @ManyToOne(() => Session, session => session.shoppingCarts)
+  public session: Session;
 }
